@@ -1,2 +1,2 @@
-TTK_LIBRARIES=src/ttk_libraries_new
-LIBOMP=C:/Program Files/LLVM/lib
+TTK_LIBRARIES=Path to ttk*.lib
+LIBOMP=Path to libomp
