@@ -1,0 +1,2 @@
+TTK_LIBRARIES=src/ttk_libraries_new
+LIBOMP=C:/Program Files/LLVM/lib
