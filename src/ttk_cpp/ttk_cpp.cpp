@@ -44,7 +44,7 @@ Ttk_rs::Ttk_rs()
 void Ttk_rs::test_ftr(
     float *data_3d,       // 一次元ベクタに変換後の面分光データ(三次元スカラー場)
     unsigned int datalen, // data_3dのサイズ
-    unsigned int xdim,    //もとの三次元データのそれぞれの次元のサイズ
+    unsigned int xdim,    // もとの三次元データのそれぞれの次元のサイズ
     unsigned int ydim,    // xdim,ydimは赤経赤緯方向、zdimは波長方向
     unsigned int zdim)
 {
@@ -94,11 +94,11 @@ void Ttk_rs::compute_persistence_pairs(float *data_2d, unsigned int datalen, uns
   ttk::PersistenceDiagram diagram;
   std::vector<ttk::PersistencePair> diagramOutput(5000);
   diagram.preconditionTriangulation(&triangulation);
-  diagram.executeFTM(diagramOutput, pointSet.data(), order.data(), &triangulation);
+  diagram.execute(diagramOutput, pointSet.data(), 0, order.data(), &triangulation);
   for (int i = 0; i < diagramOutput.size(); ++i)
   {
-    birth[i] = diagramOutput[i].birth;
-    death[i] = diagramOutput[i].death;
+    birth[i] = diagramOutput[i].birth.id;
+    death[i] = diagramOutput[i].death.id;
   }
   *len = diagramOutput.size();
   /*std::cout << "PersistentDiagram======================================" << diagramOutput.size() << std::endl;
@@ -131,12 +131,12 @@ void Ttk_rs::compute_persistence_pairs_3d(float *data_3d, unsigned int datalen, 
   ttk::PersistenceDiagram diagram;
   std::vector<ttk::PersistencePair> diagramOutput(50000);
   diagram.preconditionTriangulation(&triangulation);
-  diagram.executeFTM(diagramOutput, pointSet.data(), order.data(), &triangulation);
+  diagram.execute(diagramOutput, pointSet.data(), 0, order.data(), &triangulation);
   std::cout << "Number of Pairs: " << diagramOutput.size();
   for (int i = 0; i < diagramOutput.size(); ++i)
   {
-    birth[i] = diagramOutput[i].birth;
-    death[i] = diagramOutput[i].death;
+    birth[i] = diagramOutput[i].birth.id;
+    death[i] = diagramOutput[i].death.id;
   }
   *len = diagramOutput.size();
   /*std::cout << "PersistentDiagram======================================" << diagramOutput.size() << std::endl;
@@ -179,6 +179,24 @@ void Ttk_rs::simplification(float *data_2d, unsigned int datalen, unsigned int x
   // 7. computing the Morse-Smale complex
   ttk::MorseSmaleComplex morseSmaleComplex;
   // critical points
+  ttk::MorseSmaleComplex::OutputCriticalPoints outCriticalPoints{};
+  // 1-separatrices
+  ttk::MorseSmaleComplex::Output1Separatrices out1Separatrices{};
+  // 2-separatrices
+  ttk::MorseSmaleComplex::Output2Separatrices out2Separatrices{};
+  std::vector<ttk::SimplexId> ascendingSegmentation(
+      triangulation.getNumberOfVertices(), -1),
+      descendingSegmentation(triangulation.getNumberOfVertices(), -1),
+      mscSegmentation(triangulation.getNumberOfVertices(), -1);
+  ttk::MorseSmaleComplex::OutputManifold outSegmentation{
+      ascendingSegmentation.data(), descendingSegmentation.data(),
+      mscSegmentation.data()};
+  morseSmaleComplex.preconditionTriangulation(&triangulation);
+  morseSmaleComplex.execute(
+      outCriticalPoints, out1Separatrices, out2Separatrices, outSegmentation,
+      simplifiedHeight.data(), 0, simplifiedOrder.data(), triangulation);
+  // segmentation
+  /*// critical points
   ttk::SimplexId criticalPoints_numberOfPoints{};
   std::vector<std::array<float, 3>> criticalPoints_points;
   std::vector<char> criticalPoints_points_cellDimensions;
@@ -230,50 +248,50 @@ void Ttk_rs::simplification(float *data_2d, unsigned int datalen, unsigned int x
       &separatrices1_cells_separatrixFunctionMinimaId,
       &separatrices1_cells_isOnBoundary);
 
-  morseSmaleComplex.execute<float>(triangulation);
-  std::cout << "Number Of CP: " << (unsigned int)criticalPoints_points_cellDimensions.size() << std::endl;
-  std::cout << "Number Of SP: " << (unsigned int)separatrices1_numberOfPoints << std::endl;
-  std::cout << "Number Of SC: " << (unsigned int)separatrices1_numberOfCells << std::endl;
+  morseSmaleComplex.execute<float>(triangulation);*/
+  std::cout << "Number Of CP: " << (unsigned int)outCriticalPoints.points_.size() << std::endl;
+  std::cout << "Number Of SP: " << (unsigned int)out1Separatrices.pt.numberOfPoints_ << std::endl;
+  std::cout << "Number Of SC: " << (unsigned int)out1Separatrices.cl.numberOfCells_ << std::endl;
 
-  *cp_len = criticalPoints_points_cellDimensions.size();
+  *cp_len = outCriticalPoints.cellDimensions_.size();
   std::cout << "Input CP" << std::endl;
-  for (int i = 0; i < criticalPoints_points_cellDimensions.size(); ++i)
+  for (int i = 0; i < outCriticalPoints.cellDimensions_.size(); ++i)
   {
-    cp_point_type[i] = criticalPoints_points_cellDimensions[i];
-    cp_coordx[i] = criticalPoints_points[i][0];
-    cp_coordy[i] = ydim - criticalPoints_points[i][1];
-    cp_value[i] = criticalPoints_points[i][2];
-    cp_cellid[i] = criticalPoints_points_cellIds[i];
-    cp_pl_vertex_identifier[i] = criticalPoints_points_PLVertexIdentifiers[i];
-    cp_manifold_size[i] = criticalPoints_points_manifoldSize[i];
+    cp_point_type[i] = outCriticalPoints.cellDimensions_[i];
+    cp_coordx[i] = outCriticalPoints.points_[i][0];
+    cp_coordy[i] = ydim - outCriticalPoints.points_[i][1];
+    cp_value[i] = outCriticalPoints.points_[i][2];
+    cp_cellid[i] = outCriticalPoints.cellIds_[i];
+    cp_pl_vertex_identifier[i] = outCriticalPoints.PLVertexIdentifiers_[i];
+    cp_manifold_size[i] = outCriticalPoints.manifoldSize_[i];
   }
   std::cout << "Input SP" << std::endl;
-  *sp_len = (unsigned int)separatrices1_numberOfPoints;
-  for (int i = 0; i < separatrices1_numberOfPoints; ++i)
+  *sp_len = (unsigned int)out1Separatrices.pt.numberOfPoints_;
+  for (int i = 0; i < out1Separatrices.pt.numberOfPoints_; ++i)
   {
     sp_id[i] = i;
-    sp_coordx[i] = separatrices1_points[i * 3];
-    sp_coordy[i] = ydim - separatrices1_points[i * 3 + 1];
-    sp_point_type[i] = (unsigned int)separatrices1_points_cellDimensions[i];
-    sp_cellid[i] = separatrices1_points_cellIds[i];
+    sp_coordx[i] = out1Separatrices.pt.points_[i * 3];
+    sp_coordy[i] = ydim - out1Separatrices.pt.points_[i * 3 + 1];
+    sp_point_type[i] = (unsigned int)out1Separatrices.pt.cellDimensions_[i];
+    sp_cellid[i] = out1Separatrices.pt.cellIds_[i];
   }
   std::cout << "Input SC" << std::endl;
-  *sc_len = (unsigned int)separatrices1_numberOfCells;
-  for (int i = 0; i < separatrices1_numberOfCells; ++i)
+  *sc_len = (unsigned int)out1Separatrices.cl.numberOfCells_;
+  for (int i = 0; i < out1Separatrices.cl.numberOfCells_; ++i)
   {
     sc_id[i] = (unsigned int)i;
 
-    sc_source[i] = (unsigned int)separatrices1_cells_sourceIds[i];
+    sc_source[i] = (unsigned int)out1Separatrices.cl.sourceIds_[i];
 
-    sc_dest[i] = (unsigned int)separatrices1_cells_destinationIds[i];
+    sc_dest[i] = (unsigned int)out1Separatrices.cl.destinationIds_[i];
 
-    sc_connectivity_s[i] = (unsigned int)separatrices1_cells_connectivity[i * 2];
+    sc_connectivity_s[i] = (unsigned int)out1Separatrices.cl.connectivity_[i * 2];
 
-    sc_connectivity_d[i] = (unsigned int)separatrices1_cells_connectivity[i * 2 + 1];
+    sc_connectivity_d[i] = (unsigned int)out1Separatrices.cl.connectivity_[i * 2 + 1];
 
-    sc_separatrix_id[i] = (unsigned int)separatrices1_cells_separatrixIds[i];
+    sc_separatrix_id[i] = (unsigned int)out1Separatrices.cl.separatrixIds_[i];
 
-    sc_separatrix_type[i] = (unsigned int)separatrices1_cells_separatrixTypes[i];
+    sc_separatrix_type[i] = (unsigned int)out1Separatrices.cl.separatrixTypes_[i];
 
     /*std::cout << "sc_f_maxima[" << i << "]" << std::endl;
     std::cout << "sc_size: " << separatrices1_cells_separatrixFunctionMaximaId.size() << std::endl;
@@ -343,8 +361,9 @@ void Ttk_rs::simplification_3d(float *data_3d, unsigned int datalen, unsigned in
                                 authorizedCriticalPoints.data(), order.data(),
                                 simplifiedOrder.data(),
                                 authorizedCriticalPoints.size(), triangulation);
-  // 7. computing the Morse-Smale complex
+  /*// 7. computing the Morse-Smale complex
   ttk::MorseSmaleComplex morseSmaleComplex;
+  ttk::MorseSmaleComplex::OutputCriticalPoints outCriticalPoints{};
   // critical points
   ttk::SimplexId criticalPoints_numberOfPoints{};
   std::vector<std::array<float, 3>> criticalPoints_points;
@@ -397,51 +416,70 @@ void Ttk_rs::simplification_3d(float *data_3d, unsigned int datalen, unsigned in
       &separatrices1_cells_separatrixFunctionMinimaId,
       &separatrices1_cells_isOnBoundary);
 
-  morseSmaleComplex.execute<float>(triangulation);
-  std::cout << "Number Of CP: " << (unsigned int)criticalPoints_points_cellDimensions.size() << std::endl;
-  std::cout << "Number Of SP: " << (unsigned int)separatrices1_numberOfPoints << std::endl;
-  std::cout << "Number Of SC: " << (unsigned int)separatrices1_numberOfCells << std::endl;
+  morseSmaleComplex.execute<float>(triangulation);*/
+  // 7. computing the Morse-Smale complex
+  ttk::MorseSmaleComplex morseSmaleComplex;
+  // critical points
+  ttk::MorseSmaleComplex::OutputCriticalPoints outCriticalPoints{};
+  // 1-separatrices
+  ttk::MorseSmaleComplex::Output1Separatrices out1Separatrices{};
+  // 2-separatrices
+  ttk::MorseSmaleComplex::Output2Separatrices out2Separatrices{};
+  std::vector<ttk::SimplexId> ascendingSegmentation(
+      triangulation.getNumberOfVertices(), -1),
+      descendingSegmentation(triangulation.getNumberOfVertices(), -1),
+      mscSegmentation(triangulation.getNumberOfVertices(), -1);
+  ttk::MorseSmaleComplex::OutputManifold outSegmentation{
+      ascendingSegmentation.data(), descendingSegmentation.data(),
+      mscSegmentation.data()};
+  morseSmaleComplex.preconditionTriangulation(&triangulation);
+  morseSmaleComplex.execute(
+      outCriticalPoints, out1Separatrices, out2Separatrices, outSegmentation,
+      simplifiedHeight.data(), 0, simplifiedOrder.data(), triangulation);
+  std::cout << "Number Of CP: " << (unsigned int)outCriticalPoints.points_.size() << std::endl;
+  std::cout << "Number Of SP: " << (unsigned int)out1Separatrices.pt.numberOfPoints_ << std::endl;
+  std::cout << "Number Of SC: " << (unsigned int)out1Separatrices.cl.numberOfCells_ << std::endl;
 
-  *cp_len = criticalPoints_points_cellDimensions.size();
+  *cp_len = outCriticalPoints.cellDimensions_.size();
   std::cout << "Input CP" << std::endl;
-  for (int i = 0; i < criticalPoints_points_cellDimensions.size(); ++i)
+  for (int i = 0; i < outCriticalPoints.cellDimensions_.size(); ++i)
   {
-    cp_point_type[i] = criticalPoints_points_cellDimensions[i];
-    cp_coordx[i] = criticalPoints_points[i][0];
-    cp_coordy[i] = ydim - criticalPoints_points[i][1];
-    cp_coordz[i] = criticalPoints_points[i][2];
-    cp_cellid[i] = criticalPoints_points_cellIds[i];
-    cp_pl_vertex_identifier[i] = criticalPoints_points_PLVertexIdentifiers[i];
-    cp_manifold_size[i] = criticalPoints_points_manifoldSize[i];
+    cp_point_type[i] = outCriticalPoints.cellDimensions_[i];
+    cp_coordx[i] = outCriticalPoints.points_[i][0];
+    cp_coordy[i] = ydim - outCriticalPoints.points_[i][1];
+    cp_coordz[i] = outCriticalPoints.points_[i][2];
+    cp_cellid[i] = outCriticalPoints.cellIds_[i];
+    cp_pl_vertex_identifier[i] = outCriticalPoints.PLVertexIdentifiers_[i];
+    cp_manifold_size[i] = outCriticalPoints.manifoldSize_[i];
   }
   std::cout << "Input SP" << std::endl;
-  *sp_len = (unsigned int)separatrices1_numberOfPoints;
-  for (int i = 0; i < separatrices1_numberOfPoints; ++i)
+  *sp_len = (unsigned int)out1Separatrices.pt.numberOfPoints_;
+  for (int i = 0; i < out1Separatrices.pt.numberOfPoints_; ++i)
   {
     sp_id[i] = i;
-    sp_coordx[i] = separatrices1_points[i * 3];
-    sp_coordy[i] = ydim - separatrices1_points[i * 3 + 1];
-    sp_coordz[i] = separatrices1_points[i * 3 + 2];
-    sp_point_type[i] = (unsigned int)separatrices1_points_cellDimensions[i];
-    sp_cellid[i] = separatrices1_points_cellIds[i];
+    sp_coordx[i] = out1Separatrices.pt.points_[i * 3];
+    sp_coordy[i] = ydim - out1Separatrices.pt.points_[i * 3 + 1];
+    sp_coordz[i] = out1Separatrices.pt.points_[i * 3 + 2];
+    sp_point_type[i] = (unsigned int)out1Separatrices.pt.cellDimensions_[i];
+    sp_cellid[i] = out1Separatrices.pt.cellIds_[i];
   }
   std::cout << "Input SC" << std::endl;
-  *sc_len = (unsigned int)separatrices1_numberOfCells;
-  for (int i = 0; i < separatrices1_numberOfCells; ++i)
+  *sc_len = (unsigned int)out1Separatrices.cl.numberOfCells_;
+  for (int i = 0; i < out1Separatrices.cl.numberOfCells_; ++i)
   {
     sc_id[i] = (unsigned int)i;
 
-    sc_source[i] = (unsigned int)separatrices1_cells_sourceIds[i];
+    sc_source[i] = (unsigned int)out1Separatrices.cl.sourceIds_[i];
 
-    sc_dest[i] = (unsigned int)separatrices1_cells_destinationIds[i];
+    sc_dest[i] = (unsigned int)out1Separatrices.cl.destinationIds_[i];
 
-    sc_connectivity_s[i] = (unsigned int)separatrices1_cells_connectivity[i * 2];
+    sc_connectivity_s[i] = (unsigned int)out1Separatrices.cl.connectivity_[i * 2];
 
-    sc_connectivity_d[i] = (unsigned int)separatrices1_cells_connectivity[i * 2 + 1];
+    sc_connectivity_d[i] = (unsigned int)out1Separatrices.cl.connectivity_[i * 2 + 1];
 
-    sc_separatrix_id[i] = (unsigned int)separatrices1_cells_separatrixIds[i];
+    sc_separatrix_id[i] = (unsigned int)out1Separatrices.cl.separatrixIds_[i];
 
-    sc_separatrix_type[i] = (unsigned int)separatrices1_cells_separatrixTypes[i];
+    sc_separatrix_type[i] = (unsigned int)out1Separatrices.cl.separatrixTypes_[i];
 
     /*std::cout << "sc_f_maxima[" << i << "]" << std::endl;
     std::cout << "sc_size: " << separatrices1_cells_separatrixFunctionMaximaId.size() << std::endl;
