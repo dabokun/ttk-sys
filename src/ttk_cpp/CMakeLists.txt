@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 
 # name of the project
 project(ttk_cpp)
-set(Boost_INCLUDE_DIR C:/Users/kstrb/anaconda3/Library/include/)
+set(Boost_INCLUDE_DIR Path_to_Boost_1_73)
 set(CMAKE_CXX_STANDARD 11)
 unset(TTK_ENABLE_OPENMP CACHE)
 find_package(TTKBase REQUIRED)
