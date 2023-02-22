@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <iomanip>
 #include <string>
+#include <cfloat>
+#include <cmath>
 #include <CommandLineParser.h>
 #include <MorseSmaleComplex.h>
 #include <PersistenceCurve.h>
@@ -76,7 +78,8 @@ void Ttk_rs::ttk_helloworld()
   return;
 }
 
-void Ttk_rs::compute_persistence_pairs(float *data_2d, unsigned int datalen, unsigned int xdim, unsigned int ydim, int *birth, int *death, int *len)
+void Ttk_rs::compute_persistence_pairs(float *data_2d, unsigned int datalen, unsigned int xdim, unsigned int ydim, int *birth, int *death, int *len,
+                                       int *node_ptr, int *arcs_ptr, int *nodes_len, int *arcs_n, int *arcs_len)
 {
   ttk::globalDebugLevel_ = 3;
   // validate
@@ -94,13 +97,81 @@ void Ttk_rs::compute_persistence_pairs(float *data_2d, unsigned int datalen, uns
   ttk::PersistenceDiagram diagram;
   std::vector<ttk::PersistencePair> diagramOutput(5000);
   diagram.preconditionTriangulation(&triangulation);
+  diagram.setBackend(ttk::PersistenceDiagram::BACKEND::FTM);
   diagram.execute(diagramOutput, pointSet.data(), 0, order.data(), &triangulation);
+  // FTMTree
+  ttk::Triangulation triangulation_ftm;
+  triangulation_ftm.setInputGrid(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, xdim, ydim, 1);
+  ttk::ftm::FTMTree ftmtree;
+  ftmtree.preconditionTriangulation(&triangulation_ftm);
+  ftmtree.setVertexScalars<float>(pointSet.data());
+  ftmtree.setTreeType(ttk::ftm::TreeType::Contour);
+  ftmtree.setVertexSoSoffsets(order.data());
+  ftmtree.setSegmentation(true);
+  ftmtree.build<float>(&triangulation_ftm);
+  ftmtree.printTree2();
   for (int i = 0; i < diagramOutput.size(); ++i)
   {
     birth[i] = diagramOutput[i].birth.id;
     death[i] = diagramOutput[i].death.id;
   }
   *len = diagramOutput.size();
+
+  for (int i = 0; i < ftmtree.getNumberOfNodes(); ++i)
+  {
+    const ttk::ftm::Node *node = ftmtree.getNode(i);
+    node_ptr[i] = node->getVertexId();
+  }
+  *nodes_len = ftmtree.getNumberOfNodes();
+
+  unsigned int counter = 0;
+  for (int i = 0; i < ftmtree.getNumberOfSuperArcs(); ++i)
+  {
+    const ttk::ftm::SuperArc *sa = ftmtree.getSuperArc(i);
+
+    arcs_ptr[counter] = ftmtree.getNode(sa->getDownNodeId())->getVertexId();
+    arcs_ptr[counter + 1] = ftmtree.getNode(sa->getUpNodeId())->getVertexId();
+    arcs_ptr[counter + 2] = sa->regionSize();
+    counter += 3;
+    auto region = sa->getRegion();
+    for (auto it = region.begin(); it != region.end(); it++)
+    {
+      arcs_ptr[counter] = *it;
+      counter++;
+    }
+    int start_id = 0;
+    int end_id = 0;
+    bool start_flag = false;
+    bool end_flag = false;
+    bool start_is_birth = false;
+    bool end_is_birth = false;
+    ttk::CriticalType start_type;
+    ttk::CriticalType end_type;
+    for (int j = 0; j < diagramOutput.size(); ++j)
+    {
+      if (birth[j] == ftmtree.getNode(sa->getDownNodeId())->getVertexId())
+      {
+        start_id = j;
+        start_flag = true;
+        start_is_birth = true;
+        start_type = diagramOutput[j].birth.type;
+      }
+      if (death[j] == ftmtree.getNode(sa->getUpNodeId())->getVertexId())
+      {
+        end_id = j;
+        end_flag = true;
+        end_type = diagramOutput[j].death.type;
+      }
+      if (start_flag && end_flag)
+      {
+        break;
+      }
+    }
+  }
+
+  *arcs_n = ftmtree.getNumberOfSuperArcs();
+  *arcs_len = counter;
+
   /*std::cout << "PersistentDiagram======================================" << diagramOutput.size() << std::endl;
   for (int i = 0; i < diagramOutput.size(); ++i)
   {
@@ -113,7 +184,9 @@ void Ttk_rs::compute_persistence_pairs(float *data_2d, unsigned int datalen, uns
   return;
 }
 
-void Ttk_rs::compute_persistence_pairs_3d(float *data_3d, unsigned int datalen, unsigned int xdim, unsigned int ydim, unsigned int zdim, int *birth, int *death, int *len)
+void Ttk_rs::compute_persistence_pairs_3d(
+    float *data_3d, unsigned int datalen, unsigned int xdim, unsigned int ydim, unsigned int zdim, int *birth, int *death, int *len,
+    int *node_ptr, int *node_weight_ptr, int *arcs_ptr, int *nodes_len, int *arcs_n, int *arcs_len, int *volume_sizes, int *volume_sizes_len, int thres)
 {
   ttk::globalDebugLevel_ = 3;
   // validate
@@ -129,25 +202,492 @@ void Ttk_rs::compute_persistence_pairs_3d(float *data_3d, unsigned int datalen, 
   ttk::preconditionOrderArray(pointSet.size(), pointSet.data(), order.data(), 1);
 
   ttk::PersistenceDiagram diagram;
-  std::vector<ttk::PersistencePair> diagramOutput(50000);
+  std::vector<ttk::PersistencePair> diagramOutput(500000);
   diagram.preconditionTriangulation(&triangulation);
+  diagram.setBackend(ttk::PersistenceDiagram::BACKEND::FTM);
   diagram.execute(diagramOutput, pointSet.data(), 0, order.data(), &triangulation);
-  std::cout << "Number of Pairs: " << diagramOutput.size();
+  ttk::Triangulation triangulation_ftm;
+  triangulation_ftm.setInputGrid(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, xdim, ydim, zdim);
+  ttk::ftm::FTMTreePP ftmtree;
+  ftmtree.preconditionTriangulation(&triangulation_ftm);
+  ftmtree.setVertexScalars<float>(pointSet.data());
+  ftmtree.setTreeType(ttk::ftm::TreeType::Contour);
+  ftmtree.setVertexSoSoffsets(order.data());
+  ftmtree.setSegmentation(true);
+  ftmtree.build<float>(&triangulation_ftm);
+  ftmtree.printTree2();
+  float image_max, image_min;
+  image_max = FLT_MIN;
+  image_min = FLT_MAX;
+  for (int i = 0; i < datalen; ++i)
+  {
+    if (image_max < data_3d[i])
+    {
+      image_max = data_3d[i];
+    }
+    if (image_min > data_3d[i])
+    {
+      image_min = data_3d[i];
+    }
+  }
+  float image_all_diff = image_max - image_min;
+
   for (int i = 0; i < diagramOutput.size(); ++i)
   {
     birth[i] = diagramOutput[i].birth.id;
     death[i] = diagramOutput[i].death.id;
+    for (int j = 0; j < ftmtree.getNumberOfNodes(); ++j)
+    {
+      ttk::ftm::Node *node = ftmtree.getNode(j);
+      if (birth[i] == node->getVertexId())
+      {
+        break;
+      }
+    }
+    for (int j = 0; j < ftmtree.getNumberOfNodes(); ++j)
+    {
+      ttk::ftm::Node *node = ftmtree.getNode(j);
+      if (death[i] == node->getVertexId())
+      {
+        break;
+      }
+    }
   }
   *len = diagramOutput.size();
-  /*std::cout << "PersistentDiagram======================================" << diagramOutput.size() << std::endl;
-  for (int i = 0; i < diagramOutput.size(); ++i)
+
+  for (int i = 0; i < ftmtree.getNumberOfNodes(); ++i)
   {
-    std::cout << "birth: " << diagramOutput[i].birth << ", death: " << diagramOutput[i].death << std::endl;
-    std::cout << "birthType: " << (int)diagramOutput[i].birthType << ", deathType: " << (int)diagramOutput[i].deathType << std::endl;
-    std::cout << "persistence: " << diagramOutput[i].persistence << std::endl;
-    std::cout << "birth_scalar: " << pointSet[diagramOutput[i].birth] << ", death_scalar: " << pointSet[diagramOutput[i].death] << std::endl;
-  }*/
-  std::cout << "compute CC End" << std::endl;
+    const ttk::ftm::Node *node = ftmtree.getNode(i);
+    node_ptr[i] = node->getVertexId();
+    node_weight_ptr[i] = 0;
+  }
+  *nodes_len = ftmtree.getNumberOfNodes();
+  bool changed = true;
+  int region_threshold = thres;
+  unsigned int step = 0;
+  while (changed)
+  {
+    changed = false;
+    for (int i = 0; i < ftmtree.getNumberOfSuperArcs(); ++i)
+    {
+      bool skipflag = false;
+      bool upfound = false;
+      bool downfound = false;
+      ttk::ftm::SuperArc *sa = ftmtree.getSuperArc(i);
+      ttk::ftm::Node *uNode = ftmtree.getNode(sa->getUpNodeId());
+      ttk::ftm::Node *dNode = ftmtree.getNode(sa->getDownNodeId());
+
+      for (ttk::ftm::idSuperArc j = 0; j < uNode->getNumberOfDownSuperArcs(); ++j)
+      {
+        if (uNode->getDownSuperArcId(j) == i)
+        {
+          upfound = true;
+          break;
+        }
+      }
+      if (!upfound)
+      {
+        for (ttk::ftm::idSuperArc j = 0; j < dNode->getNumberOfUpSuperArcs(); ++j)
+        {
+          if (dNode->getUpSuperArcId(j) == i)
+          {
+            downfound = true;
+            break;
+          }
+        }
+        if (downfound == false)
+        {
+          continue;
+        }
+      }
+
+      int start_id = 0;
+      int start_vertex_id = 0;
+      int start_node_id = -1;
+      int end_id = 0;
+      int end_vertex_id = 0;
+      int end_node_id = -1;
+      bool start_flag = false;
+      bool end_flag = false;
+      bool start_is_birth = false;
+      bool end_is_birth = false;
+      ttk::CriticalType start_type = ttk::CriticalType::Regular;
+      ttk::CriticalType end_type = ttk::CriticalType::Regular;
+
+      for (int j = 0; j < diagramOutput.size(); ++j)
+      {
+        if (birth[j] == ftmtree.getNode(sa->getDownNodeId())->getVertexId())
+        {
+          start_id = j;
+          start_vertex_id = birth[j];
+          start_node_id = sa->getDownNodeId();
+          start_flag = true;
+          start_is_birth = true;
+          start_type = diagramOutput[j].birth.type;
+        }
+        if (death[j] == ftmtree.getNode(sa->getUpNodeId())->getVertexId())
+        {
+          end_id = j;
+          end_vertex_id = death[j];
+          end_node_id = sa->getUpNodeId();
+          end_flag = true;
+          end_type = diagramOutput[j].death.type;
+        }
+        if (start_flag && end_flag)
+        {
+          break;
+        }
+      }
+      if (start_node_id == -1)
+      {
+        for (int j = 0; j < diagramOutput.size(); ++j)
+        {
+          if (death[j] == ftmtree.getNode(sa->getDownNodeId())->getVertexId())
+          {
+            start_id = j;
+            start_vertex_id = death[j];
+            start_node_id = sa->getDownNodeId();
+            start_type = diagramOutput[j].death.type;
+          }
+        }
+      }
+      if (end_node_id == -1)
+      {
+        for (int j = 0; j < diagramOutput.size(); ++j)
+        {
+          if (birth[j] == ftmtree.getNode(sa->getUpNodeId())->getVertexId())
+          {
+            end_id = j;
+            end_vertex_id = birth[j];
+            end_node_id = sa->getUpNodeId();
+            end_type = diagramOutput[j].birth.type;
+          }
+        }
+      }
+      if (start_type == ttk::CriticalType::Saddle1 && end_type == ttk::CriticalType::Saddle2)
+      {
+        ttk::ftm::Node *s1Node = ftmtree.getNode(start_node_id);
+        ttk::ftm::Node *s2Node = ftmtree.getNode(end_node_id);
+        int s1down = s1Node->getNumberOfDownSuperArcs();
+        int s1up = s1Node->getNumberOfUpSuperArcs();
+        int s2down = s2Node->getNumberOfDownSuperArcs();
+        int s2up = s2Node->getNumberOfUpSuperArcs();
+        float difference = data_3d[s2Node->getVertexId()] - data_3d[s1Node->getVertexId()];
+        if (sa->regionSize() * difference < region_threshold)
+        {
+          if (s1down == 1 && s1up == 1 && s2down == 1 && s2up == 1)
+          {
+            changed = true;
+            ftmtree.delNode(start_node_id);
+            ftmtree.delNode(end_node_id);
+          }
+        }
+      }
+      else if (start_type == ttk::CriticalType::Saddle2 && end_type == ttk::CriticalType::Saddle1)
+      {
+        ttk::ftm::Node *s2Node = ftmtree.getNode(start_node_id);
+        ttk::ftm::Node *s1Node = ftmtree.getNode(end_node_id);
+        int s1down = s1Node->getNumberOfDownSuperArcs();
+        int s1up = s1Node->getNumberOfUpSuperArcs();
+        int s2down = s2Node->getNumberOfDownSuperArcs();
+        int s2up = s2Node->getNumberOfUpSuperArcs();
+        float difference = data_3d[s1Node->getVertexId()] - data_3d[s2Node->getVertexId()];
+        if (sa->regionSize() * difference < region_threshold)
+        {
+          if (s1down == 1 && s1up == 1 && s2down == 1 && s2up == 1)
+          {
+            changed = true;
+            ftmtree.delNode(start_node_id);
+            ftmtree.delNode(end_node_id);
+          }
+        }
+      }
+      else if ((start_type == ttk::CriticalType::Saddle2 && end_type == ttk::CriticalType::Local_maximum))
+      {
+        const ttk::ftm::Node *node = ftmtree.getNode(start_node_id);
+        ttk::ftm::Node *endNode = ftmtree.getNode(end_node_id);
+        float difference = data_3d[endNode->getVertexId()] - data_3d[node->getVertexId()];
+        auto saregions = sa->getRegions();
+        int numofregion_sa = 0;
+        for (auto region = saregions.begin(); region != saregions.end(); region++)
+        {
+          numofregion_sa++;
+        }
+        if ((float)sa->regionSize() * difference < (float)region_threshold)
+        {
+
+          if (node->getNumberOfUpSuperArcs() >= 2)
+          {
+            ttk::ftm::idSuperArc arc1 = node->getUpSuperArcId(0);
+            ttk::ftm::idSuperArc arc2 = node->getUpSuperArcId(1);
+            if (arc1 == i)
+            {
+
+              ttk::ftm::SuperArc *otherarc = ftmtree.getSuperArc(arc2);
+              float myval = data_3d[node->getVertexId()];
+              float otherval = data_3d[ftmtree.getNode(otherarc->getUpNodeId())->getVertexId()];
+              float otherdif = otherval - data_3d[node->getVertexId()];
+              changed = true;
+              otherarc->concat(*sa);
+              sa->clearSegmentation();
+              ftmtree.delNode(end_node_id);
+              ftmtree.delNode(start_node_id);
+            }
+            else if (arc2 == i)
+            {
+              ttk::ftm::SuperArc *otherarc = ftmtree.getSuperArc(arc1);
+              float myval = data_3d[node->getVertexId()];
+              float otherval = data_3d[ftmtree.getNode(otherarc->getUpNodeId())->getVertexId()];
+              float otherdif = otherval - data_3d[node->getVertexId()];
+              changed = true;
+              otherarc->concat(*sa);
+              sa->clearSegmentation();
+              ftmtree.delNode(end_node_id);
+              ftmtree.delNode(start_node_id);
+            }
+          }
+        }
+      }
+      else if ((start_type == ttk::CriticalType::Local_minimum && end_type == ttk::CriticalType::Saddle1))
+      {
+        const ttk::ftm::Node *node = ftmtree.getNode(end_node_id);
+        ttk::ftm::Node *startNode = ftmtree.getNode(start_node_id);
+        float difference = data_3d[node->getVertexId()] - data_3d[startNode->getVertexId()];
+        auto saregions = sa->getRegions();
+        int numofregion_sa = 0;
+        for (auto region = saregions.begin(); region != saregions.end(); region++)
+        {
+          numofregion_sa++;
+        }
+        if ((float)sa->regionSize() * difference < (float)region_threshold)
+        {
+          if (node->getNumberOfDownSuperArcs() >= 2)
+          {
+            ttk::ftm::idSuperArc arc1 = node->getDownSuperArcId(0);
+            ttk::ftm::idSuperArc arc2 = node->getDownSuperArcId(1);
+            if (arc1 == i)
+            {
+              ttk::ftm::SuperArc *otherarc = ftmtree.getSuperArc(arc2);
+              float myval = data_3d[startNode->getVertexId()];
+              float otherval = data_3d[ftmtree.getNode(otherarc->getDownNodeId())->getVertexId()];
+              float otherdif = data_3d[node->getVertexId()] - otherval;
+              changed = true;
+              otherarc->concat(*sa);
+              sa->clearSegmentation();
+              ftmtree.delNode(start_node_id);
+              ftmtree.delNode(end_node_id);
+            }
+            else if (arc2 == i)
+            {
+              ttk::ftm::SuperArc *otherarc = ftmtree.getSuperArc(arc1);
+              float myval = data_3d[startNode->getVertexId()];
+              float otherval = data_3d[ftmtree.getNode(otherarc->getDownNodeId())->getVertexId()];
+              float otherdif = data_3d[node->getVertexId()] - otherval;
+              changed = true;
+              otherarc->concat(*sa);
+              sa->clearSegmentation();
+              ftmtree.delNode(start_node_id);
+              ftmtree.delNode(end_node_id);
+            }
+          }
+        }
+      }
+    }
+    step++;
+  }
+
+  for (int i = 0; i < *nodes_len; ++i)
+  {
+    const ttk::ftm::Node *node = ftmtree.getNode(i);
+    if (node->getNumberOfSuperArcs() == 0)
+    {
+      node_ptr[i] = -1;
+    }
+  }
+  int active_nodes = 0;
+  for (int i = 0; i < *nodes_len; ++i)
+  {
+    if (node_ptr[i] != -1)
+    {
+      active_nodes++;
+      int weight = 0;
+      ttk::ftm::Node *node = ftmtree.getNode(i);
+      int n_region = 0;
+      for (int j = 0; j < node->getNumberOfUpSuperArcs(); ++j)
+      {
+        ttk::ftm::SuperArc *sa = ftmtree.getSuperArc(node->getUpSuperArcId(j));
+        auto regions = sa->getRegions();
+        int regionsize = 0;
+        for (auto region = regions.begin(); region != regions.end(); region++)
+        {
+          for (auto vertex = region->segmentBegin; vertex != region->segmentEnd; vertex++)
+          {
+            regionsize++;
+          }
+          n_region++;
+        }
+        weight += regionsize;
+      }
+      for (int j = 0; j < node->getNumberOfDownSuperArcs(); ++j)
+      {
+        ttk::ftm::SuperArc *sa = ftmtree.getSuperArc(node->getDownSuperArcId(j));
+        auto regions = sa->getRegions();
+        int regionsize = 0;
+        for (auto region = regions.begin(); region != regions.end(); region++)
+        {
+          for (auto vertex = region->segmentBegin; vertex != region->segmentEnd; vertex++)
+          {
+            regionsize++;
+          }
+          n_region++;
+        }
+        weight += regionsize;
+      }
+      if (n_region > 0)
+      {
+        node_weight_ptr[i] = weight / n_region;
+      }
+      else
+      {
+        node_weight_ptr[i] = 0;
+      }
+    }
+  }
+  unsigned int counter = 0;
+  int max = 0;
+  int num_of_arcs = 0;
+
+  for (int i = 0; i < ftmtree.getNumberOfSuperArcs(); ++i)
+  {
+    bool skipflag = false;
+    bool upfound = false;
+    bool downfound = false;
+    ttk::ftm::SuperArc *sa = ftmtree.getSuperArc(i);
+    ttk::ftm::Node *uNode = ftmtree.getNode(sa->getUpNodeId());
+    ttk::ftm::Node *dNode = ftmtree.getNode(sa->getDownNodeId());
+    for (ttk::ftm::idSuperArc j = 0; j < uNode->getNumberOfDownSuperArcs(); ++j)
+    {
+      if (uNode->getDownSuperArcId(j) == i)
+      {
+        upfound = true;
+        break;
+      }
+    }
+    for (ttk::ftm::idSuperArc j = 0; j < dNode->getNumberOfUpSuperArcs(); ++j)
+    {
+      if (dNode->getUpSuperArcId(j) == i)
+      {
+        downfound = true;
+        break;
+      }
+    }
+    if (!(upfound && downfound))
+    {
+      continue;
+    }
+    int start_id = 0;
+    int start_vertex_id = 0;
+    int start_node_id = 0;
+    int end_id = 0;
+    int end_vertex_id = 0;
+    int end_node_id = 0;
+    bool start_flag = false;
+    bool end_flag = false;
+    bool start_is_birth = false;
+    bool end_is_birth = false;
+    ttk::CriticalType start_type;
+    ttk::CriticalType end_type;
+    for (int j = 0; j < diagramOutput.size(); ++j)
+    {
+      if (birth[j] == ftmtree.getNode(sa->getDownNodeId())->getVertexId())
+      {
+        start_id = j;
+        start_vertex_id = birth[j];
+        start_node_id = sa->getDownNodeId();
+        start_flag = true;
+        start_is_birth = true;
+        start_type = diagramOutput[j].birth.type;
+      }
+      if (death[j] == ftmtree.getNode(sa->getUpNodeId())->getVertexId())
+      {
+        end_id = j;
+        end_vertex_id = death[j];
+        end_node_id = sa->getUpNodeId();
+        end_flag = true;
+        end_type = diagramOutput[j].death.type;
+      }
+      if (start_flag && end_flag)
+      {
+        break;
+      }
+    }
+    auto regions = sa->getRegions();
+    int numofregion = 0;
+    for (auto region = regions.begin(); region != regions.end(); region++)
+    {
+      numofregion++;
+    }
+    int regionsize = 0;
+    for (auto region = regions.begin(); region != regions.end(); region++)
+    {
+      for (auto vertex = region->segmentBegin; vertex != region->segmentEnd; vertex++)
+      {
+        regionsize++;
+      }
+    }
+    arcs_ptr[counter] = ftmtree.getNode(sa->getDownNodeId())->getVertexId();
+    arcs_ptr[counter + 1] = ftmtree.getNode(sa->getUpNodeId())->getVertexId();
+    arcs_ptr[counter + 2] = regionsize;
+    counter += 3;
+
+    for (auto region = regions.begin(); region != regions.end(); region++)
+    {
+      for (auto vertex = region->segmentBegin; vertex != region->segmentEnd; vertex++)
+      {
+        arcs_ptr[counter] = *vertex;
+        volume_sizes[*vertex] = sa->getRegion().size() / numofregion;
+        if (max < *vertex)
+        {
+          max = *vertex;
+        }
+        counter++;
+      }
+    }
+    num_of_arcs++;
+    std::cout << ftmtree.printArc(i) << std::endl;
+  }
+  *arcs_n = num_of_arcs;
+  *arcs_len = counter;
+  *volume_sizes_len = max;
+
+  for (int i = 0; i < *len; ++i)
+  {
+    for (int j = 0; j < ftmtree.getNumberOfNodes(); ++j)
+    {
+      ttk::ftm::Node *node = ftmtree.getNode(j);
+      if (birth[i] == node->getVertexId())
+      {
+        if (node->getNumberOfSuperArcs() == 0)
+        {
+          birth[i] = -1;
+        }
+        break;
+      }
+    }
+    for (int j = 0; j < ftmtree.getNumberOfNodes(); ++j)
+    {
+      ttk::ftm::Node *node = ftmtree.getNode(j);
+      if (death[i] == node->getVertexId())
+      {
+        if (node->getNumberOfSuperArcs() == 0)
+        {
+          death[i] = -1;
+        }
+        break;
+      }
+    }
+  }
+
   return;
 }
 
@@ -155,7 +695,7 @@ void Ttk_rs::simplification(float *data_2d, unsigned int datalen, unsigned int x
                             unsigned int *cp_point_type, float *cp_coordx, float *cp_coordy, float *cp_value, unsigned int *cp_cellid, unsigned int *cp_pl_vertex_identifier, unsigned int *cp_manifold_size,
                             unsigned int *cp_len, unsigned int *sp_id, float *sp_coordx, float *sp_coordy, unsigned int *sp_point_type, unsigned int *sp_cellid, unsigned int *sp_len,
                             unsigned int *sc_id, unsigned int *sc_source, unsigned int *sc_dest, unsigned int *sc_connectivity_s, unsigned int *sc_connectivity_d, unsigned int *sc_separatrix_id,
-                            unsigned int *sc_separatrix_type, unsigned int *sc_f_maxima, unsigned int *sc_f_minima, float *sc_f_diff, unsigned int *sc_len)
+                            unsigned int *sc_separatrix_type, unsigned int *sc_f_maxima, unsigned int *sc_f_minima, float *sc_f_diff, unsigned int *sc_len, float *morsesmale)
 {
   ttk::globalDebugLevel_ = 3;
   ttk::Triangulation triangulation;
@@ -336,6 +876,66 @@ void Ttk_rs::simplification(float *data_2d, unsigned int datalen, unsigned int x
   return;
 }
 
+void Ttk_rs::get_simplified(float *data_2d, unsigned int datalen, unsigned int xdim, unsigned int ydim, int *authorized_birth_ids, int *authorized_death_ids, unsigned int authorized_datalen,
+                            float *simplified, int *simplified_len)
+{
+  ttk::globalDebugLevel_ = 3;
+  ttk::Triangulation triangulation;
+  std::vector<float> pointSet(data_2d, data_2d + datalen);
+  triangulation.setInputGrid(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, xdim, ydim, 1);
+  std::vector<ttk::SimplexId> order(pointSet.size());
+  ttk::preconditionOrderArray(pointSet.size(), pointSet.data(), order.data());
+  ttk::TopologicalSimplification simplification;
+  simplification.preconditionTriangulation(&triangulation);
+  std::vector<float> simplifiedHeight = pointSet;
+  std::vector<ttk::SimplexId> authorizedCriticalPoints, simplifiedOrder = order;
+  for (int i = 0; i < authorized_datalen; ++i)
+  {
+    authorizedCriticalPoints.push_back(authorized_birth_ids[i]);
+    authorizedCriticalPoints.push_back(authorized_death_ids[i]);
+  }
+  simplification.execute<float>(pointSet.data(), simplifiedHeight.data(),
+                                authorizedCriticalPoints.data(), order.data(),
+                                simplifiedOrder.data(),
+                                authorizedCriticalPoints.size(), triangulation);
+  for (int i = 0; i < simplifiedHeight.size(); ++i)
+  {
+    simplified[i] = simplifiedHeight[i];
+  }
+  *simplified_len = simplifiedHeight.size();
+  return;
+}
+
+void Ttk_rs::get_simplified_3d(float *data_3d, unsigned int datalen, unsigned int xdim, unsigned int ydim, unsigned int zdim, int *authorized_birth_ids, int *authorized_death_ids, unsigned int authorized_datalen,
+                               float *simplified, int *simplified_len)
+{
+  ttk::globalDebugLevel_ = 3;
+  ttk::Triangulation triangulation;
+  std::vector<float> pointSet(data_3d, data_3d + datalen);
+  triangulation.setInputGrid(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, xdim, ydim, zdim);
+  std::vector<ttk::SimplexId> order(pointSet.size());
+  ttk::preconditionOrderArray(pointSet.size(), pointSet.data(), order.data());
+  ttk::TopologicalSimplification simplification;
+  simplification.preconditionTriangulation(&triangulation);
+  std::vector<float> simplifiedHeight = pointSet;
+  std::vector<ttk::SimplexId> authorizedCriticalPoints, simplifiedOrder = order;
+  for (int i = 0; i < authorized_datalen; ++i)
+  {
+    authorizedCriticalPoints.push_back(authorized_birth_ids[i]);
+    authorizedCriticalPoints.push_back(authorized_death_ids[i]);
+  }
+  simplification.execute<float>(pointSet.data(), simplifiedHeight.data(),
+                                authorizedCriticalPoints.data(), order.data(),
+                                simplifiedOrder.data(),
+                                authorizedCriticalPoints.size(), triangulation);
+  for (int i = 0; i < simplifiedHeight.size(); ++i)
+  {
+    simplified[i] = simplifiedHeight[i];
+  }
+  *simplified_len = simplifiedHeight.size();
+  return;
+}
+
 void Ttk_rs::simplification_3d(float *data_3d, unsigned int datalen, unsigned int xdim, unsigned int ydim, unsigned int zdim, int *authorized_birth_ids, int *authorized_death_ids, unsigned int authorized_datalen,
                                unsigned int *cp_point_type, float *cp_coordx, float *cp_coordy, float *cp_coordz, float *cp_value, unsigned int *cp_cellid, unsigned int *cp_pl_vertex_identifier, unsigned int *cp_manifold_size,
                                unsigned int *cp_len, unsigned int *sp_id, float *sp_coordx, float *sp_coordy, float *sp_coordz, unsigned int *sp_point_type, unsigned int *sp_cellid, unsigned int *sp_len,
@@ -468,17 +1068,11 @@ void Ttk_rs::simplification_3d(float *data_3d, unsigned int datalen, unsigned in
   for (int i = 0; i < out1Separatrices.cl.numberOfCells_; ++i)
   {
     sc_id[i] = (unsigned int)i;
-
     sc_source[i] = (unsigned int)out1Separatrices.cl.sourceIds_[i];
-
     sc_dest[i] = (unsigned int)out1Separatrices.cl.destinationIds_[i];
-
     sc_connectivity_s[i] = (unsigned int)out1Separatrices.cl.connectivity_[i * 2];
-
     sc_connectivity_d[i] = (unsigned int)out1Separatrices.cl.connectivity_[i * 2 + 1];
-
     sc_separatrix_id[i] = (unsigned int)out1Separatrices.cl.separatrixIds_[i];
-
     sc_separatrix_type[i] = (unsigned int)out1Separatrices.cl.separatrixTypes_[i];
 
     /*std::cout << "sc_f_maxima[" << i << "]" << std::endl;
